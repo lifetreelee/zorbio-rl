@@ -32,6 +32,23 @@
             {{ > targets     }}
             {{ > size-meter  }}
         {{ /if }}
+
+        {{ #if is_admin && state === STATES.PLAYING }}
+        <div id="admin-hud">
+            Bots: {{ #if admin_bots_enabled }}{{ #if admin_rl_enabled }}RL{{ else }}ON{{ /if }}{{ else }}OFF{{ /if }}
+            <span id="admin-hud-hint">[V] toggle RL &middot; [G] spectate &middot; [Esc] leave</span>
+        </div>
+        {{ /if }}
+        {{ #if !is_admin && state === STATES.PLAYING }}
+        <div id="mode-hud">
+            <span id="mode-hud-hint">[G] toggle spectate</span>
+        </div>
+        {{ /if }}
+        {{ #if tracked_bot_name && state === STATES.PLAYING }}
+        <div id="track-hud">
+            Tracking: {{ tracked_bot_name }} <span id="track-hud-hint">[T] stop</span>
+        </div>
+        {{ /if }}
         {{ #if state === STATES.PLAYING_CONFIG }}
             {{ > config-play }}
         {{ /if }}

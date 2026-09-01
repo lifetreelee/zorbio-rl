@@ -14,7 +14,8 @@ global ZOR:true,
  handleDeath:true,
  handleOtherPlayerCapture:true,
  removePlayerFromGame:true,
- handlePlayerKick:true
+ handlePlayerKick:true,
+ rebuildPlayerView:true
 */
 
 ZOR.ZORMessageHandler = {};
@@ -63,6 +64,41 @@ ZOR.ZORMessageHandler.z_handle_send_ping = function ZORhandleSendPing() {
     player.model.fps_metric.add(fps);
 
     return fps;
+};
+
+/**
+ * Handles the admin status message. Populates the admin panel data - see config-form.html.
+ * Non-admins never receive this message, so is_admin stays false and the panel stays hidden.
+ * @param {Object} msg
+ */
+ZOR.ZORMessageHandler.z_handle_admin_status = function ZORhandleAdminStatus(msg) {
+    ZOR.UI.engine.set('is_admin', !!msg.is_admin);
+    ZOR.UI.engine.set('admin_bots_enabled', !!msg.bots_enabled);
+    ZOR.UI.engine.set('admin_rl_enabled', !!msg.rl_enabled);
+    ZOR.UI.engine.set('admin_paused', !!msg.paused);
+    ZOR.UI.engine.set('admin_max_bots', msg.max_bots);
+    ZOR.UI.engine.set('admin_rl_threshold', msg.rl_threshold);
+    ZOR.UI.engine.set('admin_bot_max_spawn_scale', msg.bot_max_spawn_scale);
+    ZOR.UI.engine.set('admin_bots_can_eat_bots', !!msg.bots_can_eat_bots);
+    ZOR.UI.engine.set('admin_world_size', msg.world_size);
+    ZOR.UI.engine.set('admin_food_density', msg.food_density);
+
+    // seed the editable draft fields once from the server's actual values -
+    // afterwards leave them alone so they don't clobber an in-progress edit
+    if (!ZOR.UI.engine.get('admin_world_size_draft')) {
+        ZOR.UI.engine.set('admin_world_size_draft', msg.world_size);
+    }
+    if (!ZOR.UI.engine.get('admin_food_density_draft')) {
+        ZOR.UI.engine.set('admin_food_density_draft', msg.food_density);
+    }
+};
+
+ZOR.ZORMessageHandler.z_handle_admin_debug_stats = function ZORhandleAdminDebugStats(msg) {
+    ZOR.UI.engine.set('admin_debug_stats', msg.stats || []);
+};
+
+ZOR.ZORMessageHandler.z_handle_player_type_changed = function ZORhandlePlayerTypeChanged(msg) {
+    rebuildPlayerView(msg.playerId, msg.type, msg.position, msg.scale);
 };
 
 ZOR.ZORMessageHandler.z_handle_pong = function ZORhandlePong(duration) {

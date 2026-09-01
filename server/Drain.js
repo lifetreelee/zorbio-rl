@@ -39,7 +39,10 @@ ZOR.Drain.findAll = function ZORDrainFindAll( players ) {
             // find the distance between these two players
             p2 = players_array[j];
 
-            if (p1.type === ZOR.PlayerTypes.BOT && p2.type === ZOR.PlayerTypes.BOT) continue;
+            if (!config.BOTS_CAN_DRAIN_BOTS && p1.type === ZOR.PlayerTypes.BOT && p2.type === ZOR.PlayerTypes.BOT) continue;
+
+            // Spectators are pure observers - never drain or get drained
+            if (p1.type === ZOR.PlayerTypes.SPECTATOR || p2.type === ZOR.PlayerTypes.SPECTATOR) continue;
 
             p1_scale = p1.sphere.scale;
             p2_scale = p2.sphere.scale;

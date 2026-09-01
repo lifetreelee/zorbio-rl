@@ -233,7 +233,7 @@ ZOR.PlayerController = class ZORPlayerController {
         // first update any player abilities
         this.model.abilities.speed_boost.update();
 
-        if (config.AUTO_RUN_ENABLED) {
+        if (config.AUTO_RUN_ENABLED && this.model.type !== ZOR.PlayerTypes.SPECTATOR) {
             this.moveForward(camera); // always move forward
         }
         this.applyVelocity(lag_scale, camera_controls);
@@ -262,14 +262,22 @@ ZOR.PlayerController = class ZORPlayerController {
         this.model.sphere.velocity.normalize();
         this.model.sphere.velocity.multiplyScalar( player.getSpeed() * lag_scale );
 
-        this.view.mainSphere.position.sub(
-            UTIL.adjustVelocityWallHit(
-                this.view.mainSphere.position,
-                0,
-                this.model.sphere.velocity,
-                zorbioModel.worldSize
-            )
-        );
+        // Spectators aren't bound to the play area - no-clip through the
+        // world boundary instead of being stopped at it, so an admin can fly
+        // outside the box and look back in.
+        if (this.model.type === ZOR.PlayerTypes.SPECTATOR) {
+            this.view.mainSphere.position.sub( this.model.sphere.velocity );
+        }
+        else {
+            this.view.mainSphere.position.sub(
+                UTIL.adjustVelocityWallHit(
+                    this.view.mainSphere.position,
+                    0,
+                    this.model.sphere.velocity,
+                    zorbioModel.worldSize
+                )
+            );
+        }
 
         // sync position with model
         this.model.sphere.position.copy(this.view.mainSphere.position);

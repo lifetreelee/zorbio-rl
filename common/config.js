@@ -37,10 +37,27 @@ config.WORLD_HYPOTENUSE = Math.sqrt( Math.pow( Math.sqrt( Math.pow( config.WORLD
 //                           BOT SETTINGS                             //
 ////////////////////////////////////////////////////////////////////////
 config.MAX_BOTS             = 20;
-config.MAX_BOT_RADIUS       = 100;
-config.BOT_CHASE_TIME_MIN   = 20000;   // Min time a bot will chase a player
-config.BOT_CHASE_TIME_MAX   = 45000;   // Max time a bot will chase a player
+config.MAX_BOT_RADIUS       = 140;
+config.BOT_CHASE_TIME_MIN   = 45000;   // Min time a bot will chase a player
+config.BOT_CHASE_TIME_MAX   = 90000;   // Max time a bot will chase a player
 config.BOT_DEFAULT_MOVEMENT = 'curve'; // Default movement pattern for bots
+config.RL_BOT_SIZE_THRESHOLD = 15;     // bots bigger than this use 'hunt'/'rl' instead of a random curve - admin-adjustable live. Lowered from 50 while actively training PPO: the spawn-scale curve (see BotController.js getNextSpawnScale) only ever puts ONE bot per cycle above 50 (the "apex" bot), so at 50 there was only ever a single RL bot generating training data - one bot's self-reinforcing trajectory with no diversity of starting conditions or opponents, which collapsed into a "do nothing" local optimum after ~13 PPO rounds. 15 pulls in the next couple of spawn-cycle bots (~27, ~16) as concurrent RL bots too. Raise back toward 50 once training isn't actively running.
+config.BOT_MAX_SPAWN_SCALE  = 140;     // caps the size of any newly-spawned bot - lower this to flatten the "one guaranteed giant bot" pattern - admin-adjustable live
+config.BOTS_CAN_EAT_BOTS    = true;    // if true, bots can capture each other, not just humans - admin-adjustable live. Enabled while actively training PPO: with this false, capturePlayer() hard-blocks all bot-vs-bot growth (AppServer.js), so once RL bots exhaust nearby food they have zero path to further growth - no amount of training can teach a policy to do something structurally impossible. This was the real driver behind episodes landing on the exact zero-growth reward floor. Admin toggle also resets to this default on every restart (in-memory only), consistent with the other RL toggles - see memory note on that.
+config.BOTS_CAN_DRAIN_BOTS  = true;    // if true, bots passively drain each other on proximity, same as humans do (Drain.js/AppServer.js were previously hardcoded to skip bot-bot pairs). Capture requires the attacker be >10% bigger, so two bots at MAX_PLAYER_RADIUS can never eat each other - drain has no such floor, the smaller of any two nearby bots continuously siphons mass off the bigger one regardless of the gap. This gives stagnant maxed-out bots real, non-optional pressure instead of relying solely on a bot choosing to self-shrink via boost.
+config.RL_EPISODE_MAX_STEPS = 6000;    // ~5 min at 20Hz - truncates (not terminates) very long-lived rl bots so one episode can't dominate the training buffer
+config.RL_STUCK_NET_DIST    = 30;      // minimum net displacement (world units) required every RL_STUCK_TICKS_LIMIT-tick window, checked anywhere on the map (not just near a wall) - a near-MAX_PLAYER_RADIUS bot's top speed is naturally very low (see STATIONARY_RADIUS), but even at max size, committing to one direction covers ~170 world units in this window, so this only catches genuine stalls (wall-clamped, cornered, or oscillating in place from stochastic sampling), not "big and slow but still trying"
+config.RL_STUCK_TICKS_LIMIT = 200;     // ~10s at 20Hz per stuck-detection window - see Bot.js moveRL's stuck detection
+config.RL_GROWTH_REWARD_SCALE = 5;     // multiplies (scale_t - scale_t-1) / scale_t-1 into a per-tick reward - normalized so the signal is meaningful at any bot size, not just large ones. (Reduced 20x from 100 on 2026-08-29: discounted returns at the old scale reached -37, which forced the actor-critic's shared trunk to grow large enough to represent them, saturating mean_head's tanh as collateral damage - three tanh-saturation recurrences traced to this. Ratios to RL_KILL_REWARD/RL_HUNGER_TAX/RL_BOOST_REWARD preserved so the optimal policy is unchanged, only its absolute reward/return magnitude shrinks.)
+config.RL_KILL_REWARD         = 1;     // flat one-time bonus per opponent captured (player OR bot, whichever BOTS_CAN_EAT_BOTS allows), on top of whatever growth reward the capture also produced. Growth reward alone goes to zero once a bot hits MAX_PLAYER_RADIUS (its scale simply stops changing), which would otherwise mean a maxed-out bot gets no positive signal at all for continuing to hunt - this keeps kills rewarding regardless of current size.
+config.RL_HUNGER_TAX          = 0.0005; // small constant per-tick cost - makes standing still a net loss over an episode so turtling isn't the "safe" strategy
+config.RL_BOOST_REWARD        = 0.005; // per-tick bonus while actively boosting near an eatable target - bots big enough to pay the boost mass cost (see Bot.js's shrink-penalty listener, gated on RL_BOT_SIZE_THRESHOLD) have a real trade-off here, but it's still a rarely-sampled binary action with no reason yet for PPO to discover it's worth that cost. Gated on there being a real nearby target so it can't be farmed by spamming boost with nothing to chase.
+config.RL_BOOST_REWARD_RANGE  = 400;   // world units - "nearby" for the boost reward's target check, above
+config.RL_DEATH_PENALTY       = -1.0;  // added once, only on a real death (terminated) - never on truncation (admin removal / step cap)
+config.RL_POPULATION_RESET_INTERVAL_MS = 90 * 60 * 1000; // force-clear and respawn the entire bot population (see AppServer.js serverTickFast) - a backstop against the population converging to "everyone at MAX_PLAYER_RADIUS" and stalling, plus a steady trickle of fresh small-scale episodes into training either way. Lengthened from 20 min to 90 min on 2026-08-29: the two things this was hedging against (bots never voluntarily shrinking, so the population never breaks its own stall) are now empirically confirmed working on their own - boost-based self-shrink is measured happening reliably and scaling with size (config.RL_BOOST_REWARD is enough incentive alone), and drain (config.BOTS_CAN_DRAIN_BOTS) siphons mass at any size gap, not just once the whole population caps out. The stall risk this was written for is real but now much less likely to actually bite, and a full 20-min wipe was cutting short exactly the kind of multi-agent social dynamics (a dominant orb, smaller bots drain-farming near it, size-parity rivalries) that turned out to be this project's most interesting emergent behavior - see [[rl-phase-progress]]. Still keeping *some* interval rather than removing it, for training-diversity reasons independent of the stall question.
+config.RL_POOL_SAMPLE_RATE    = 0;     // fraction of new rl episodes that draw a frozen opponent-pool checkpoint instead of the live policy - 0 until the pool has a compatible checkpoint to draw from (empty post-Phase-4/5b architecture changes); every slot falls back to the live policy anyway when empty, so a nonzero rate here just halves training throughput for nothing. Raise once checkpoints/ has real PPO checkpoints in it.
+config.RL_POOL_SIZE           = 8;     // upper bound on pool slot ids sent over the wire - the sidecar resolves what (if anything) currently occupies a given slot, this is just the sampling range
+config.ADMIN_NAMES          = ['michael']; // player names (case-insensitive) granted admin controls
 
 ////////////////////////////////////////////////////////////////////////
 //                          NETWORK SETTINGS                          //
@@ -129,6 +146,7 @@ config.MAX_PLAYER_RADIUS     = 150;
 // https://www.desmos.com/calculator/dphm84crab
 config.MAX_PLAYER_SPEED  = 2;
 config.STATIONARY_RADIUS = config.MAX_PLAYER_RADIUS + 25; // the size at which speed = 0 (hint: make it bigger than max_size or you'll get stuck when huge!)
+config.SPECTATOR_SPEED   = 4; // constant fly speed for spectators, unaffected by scale
 
 // a multiplier for the player name size
 config.PLAYER_NAME_SIZE = 20;
@@ -207,7 +225,7 @@ config.DRAIN_SIZE_INFLUENCE  = 0.4; // bonus percentage to drain due from relati
 //                           FOOD SETTINGS                            //
 ////////////////////////////////////////////////////////////////////////
 
-config.FOOD_DENSITY                = 32;       // How much food there is, total food = this number cubed
+config.FOOD_DENSITY                = 35;       // How much food there is, total food = this number cubed
 config.FOOD_VALUE                  = 0.5;      // amount to increase sphere by when food is consumed
 config.FOOD_RESPAWN_TIME           = 30000;    // Respawn time for food in milliseconds
 config.FOOD_RESPAWN_ANIM_DURATION  = 60;       // frames

@@ -494,6 +494,73 @@ button:active {
 #gear-btn:hover {
   opacity: 0.5 !important;
 }
+#admin-hud {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 4px 12px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  color: #f7f7f7;
+  font-size: 13px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+#admin-hud-hint {
+  opacity: 0.6;
+  margin-left: 8px;
+}
+#track-hud {
+  position: absolute;
+  top: 44px;
+  right: 8px;
+  padding: 4px 12px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 0, 0.4);
+  border-radius: 4px;
+  color: #f7f7f7;
+  font-size: 13px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+#track-hud-hint {
+  opacity: 0.6;
+  margin-left: 8px;
+}
+#mode-hud {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 4px 12px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  color: #f7f7f7;
+  font-size: 13px;
+  opacity: 0.6;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.admin-readonly-row {
+  opacity: 0.7;
+  font-size: 0.85rem;
+  margin: 6px 0;
+}
+table.admin-debug-stats {
+  width: 100%;
+  max-height: 30vh;
+  overflow-y: auto;
+  display: block;
+  font-size: 0.8rem;
+  border-collapse: collapse;
+  margin-top: 6px;
+}
+table.admin-debug-stats th,
+table.admin-debug-stats td {
+  padding: 2px 8px 2px 0;
+  text-align: left;
+}
 #targets,
 #player-size {
   position: absolute;

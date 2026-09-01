@@ -143,6 +143,169 @@ function startGame(type) {
 }
 
 /**
+ * Admin-only: toggle bot spawning on/off. Server ignores this for non-admins.
+ * @param {boolean} enabled
+ */
+function adminSetBotsEnabled(enabled) {
+    zorClient.z_sendAdminSetBotsEnabled(enabled);
+}
+
+/**
+ * Admin-only: toggle whether large bots use the trained RL movement pattern.
+ * Server ignores this for non-admins.
+ * @param {boolean} enabled
+ */
+function adminSetRlEnabled(enabled) {
+    zorClient.z_sendAdminSetRlEnabled(enabled);
+}
+
+/**
+ * Admin-only: pause/unpause bot movement and captures server-wide. Server
+ * ignores this for non-admins.
+ * @param {boolean} enabled
+ */
+function adminSetPaused(enabled) {
+    zorClient.z_sendAdminSetPaused(enabled);
+}
+
+/**
+ * Admin-only: set the desired bot population. Server ignores this for non-admins.
+ * @param {number} value
+ */
+function adminSetMaxBots(value) {
+    zorClient.z_sendAdminSetMaxBots(value);
+}
+
+/**
+ * Admin-only: set the size threshold above which bots use 'hunt'/'rl'.
+ * Server ignores this for non-admins.
+ * @param {number} value
+ */
+function adminSetRlThreshold(value) {
+    zorClient.z_sendAdminSetRlThreshold(value);
+}
+
+/**
+ * Admin-only: request a fresh food/player-capture snapshot for the debug panel.
+ */
+function adminRequestDebugStats() {
+    zorClient.z_sendAdminDebugStatsRequest();
+}
+
+/**
+ * Admin-only: cap the size of newly-spawned bots.
+ * @param {number} value
+ */
+function adminSetBotMaxSpawnScale(value) {
+    zorClient.z_sendAdminSetBotMaxSpawnScale(value);
+}
+
+/**
+ * Admin-only: toggle whether bots can capture each other.
+ * @param {boolean} enabled
+ */
+function adminSetBotsCanEatBots(enabled) {
+    zorClient.z_sendAdminSetBotsCanEatBots(enabled);
+}
+
+/**
+ * Switch between PLAYER and SPECTATOR mid-session, no disconnect/rejoin.
+ * @param {string} newType ZOR.PlayerTypes.PLAYER or ZOR.PlayerTypes.SPECTATOR
+ */
+function switchPlayerType(newType) {
+    if (!gameStart || !player) return;
+    zorClient.z_sendSwitchPlayerType(newType);
+}
+
+/**
+ * Admin-only: clear and respawn every bot at the current world settings.
+ */
+function adminResetBots() {
+    zorClient.z_sendAdminResetBots();
+}
+
+/**
+ * Admin-only: apply a new world size / food density. Restarts the server
+ * process to take effect - this client (and everyone else connected) will
+ * auto-reload a moment later.
+ * @param {number} worldSize
+ * @param {number} foodDensity
+ */
+function adminApplyWorldSettings(worldSize, foodDensity) {
+    zorClient.z_sendAdminApplyWorldSettings(worldSize, foodDensity);
+}
+
+/**
+ * Leaves the game cleanly - closes the socket immediately (no page reload,
+ * no lingering input) instead of requiring the player to reach for the
+ * window/tab close button, which tends to jerk the cursor right before
+ * disconnecting and pollutes the last few ticks of logged movement data.
+ */
+function leaveGameGracefully() {
+    if (!gameStart) return;
+
+    // if the mod menu is open (world paused), unpause *before* closing the
+    // socket - ZOR.UI.state() below would normally send this, but by then
+    // z_sendLeaveGame() has already closed the connection and the message
+    // would never arrive, leaving the world frozen for everyone. The server
+    // also auto-unpauses on disconnect as a backstop, but don't rely on it.
+    if (ZOR.UI.data.is_admin && ZOR.UI.state() === ZOR.UI.STATES.PLAYING_CONFIG) {
+        adminSetPaused(false);
+    }
+
+    clearPathTracking();
+
+    zorClient.z_sendLeaveGame();
+    zorClient.z_clearIntervalMethods();
+    gameStart = false;
+    ZOR.UI.state(ZOR.UI.STATES.MENU_SCREEN);
+}
+
+/**
+ * Admin/session hotkeys, independent of the WASD movement key tracking below:
+ *   G   - toggle between PLAYER and SPECTATOR mid-session (not admin-gated,
+ *         same as the Spectate button on the main menu)
+ *   V   - admin only: toggle the trained RL movement pattern for large bots
+ *   M   - admin only: open/close the mod menu (pauses bots/captures while open)
+ *   Esc - leave the game cleanly (see leaveGameGracefully)
+ * @param {Object} evt
+ */
+function handleAdminHotkeys(evt) {
+    if (!gameStart || !player || player.isDead) return;
+
+    if (evt.key === 'Escape') {
+        leaveGameGracefully();
+        return;
+    }
+
+    if (evt.key === 'g' || evt.key === 'G') {
+        let newType = player.model.type === ZOR.PlayerTypes.SPECTATOR
+            ? ZOR.PlayerTypes.PLAYER : ZOR.PlayerTypes.SPECTATOR;
+        switchPlayerType(newType);
+        return;
+    }
+
+    if ((evt.key === 'm' || evt.key === 'M') && ZOR.UI.data.is_admin) {
+        if (ZOR.UI.state() === ZOR.UI.STATES.PLAYING_CONFIG) {
+            ZOR.UI.state(ZOR.UI.STATES.PLAYING);
+        }
+        else {
+            adminRequestDebugStats();
+            ZOR.UI.state(ZOR.UI.STATES.PLAYING_CONFIG);
+        }
+        return;
+    }
+
+    if ((evt.key === 'v' || evt.key === 'V') && ZOR.UI.data.is_admin) {
+        let enabled = !ZOR.UI.engine.get('admin_rl_enabled');
+        ZOR.UI.engine.set('admin_rl_enabled', enabled);
+        adminSetRlEnabled(enabled);
+    }
+}
+
+window.addEventListener('keydown', handleAdminHotkeys);
+
+/**
  * Respawns a player
  */
 function respawnPlayer() {
@@ -297,13 +460,22 @@ function createScene() {
         if (gameStart && !player.isDead) {
             fogCenter = player.view.mainSphere.position;
 
-            player.resetVelocity();
-
-            handleKeysDown();
-
             ZOR.LagScale.update();
 
-            player.update(scene, camera, camera_controls, ZOR.LagScale.get());
+            if (ui_state === ZOR.UI.STATES.PLAYING_CONFIG) {
+                // frozen while the settings/mod menu is open - skip movement
+                // entirely (not just holdPosition, which mouse/key handlers
+                // could clear out from under it) but keep camera orbit and
+                // rendering bookkeeping alive. Clear any pending orbit-drag
+                // velocity request so it doesn't suddenly apply as a jump the
+                // moment the menu closes.
+                camera_controls.velocityRequest.set(0, 0, 0);
+            }
+            else {
+                player.resetVelocity();
+                handleKeysDown();
+                player.update(scene, camera, camera_controls, ZOR.LagScale.get());
+            }
 
             throttledSendPlayerUpdate();
 
@@ -318,6 +490,8 @@ function createScene() {
             throttledUpdatePlayerSizeUI();
 
             throttledUpdateTargetLock();
+
+            updatePathTracking();
         }
         else if (ZOR.UI.state().indexOf('menu') === 0) {
             fogCenter = camera.position;
@@ -395,6 +569,71 @@ function initCameraAndPlayer() {
     player.view.adjustCamera(player.radius());
 
     playerFogCenter.copy(player.view.mainSphere.position);
+}
+
+/**
+ * Removes stale mesh references for a player from the raycast-target list.
+ * PlayerView.remove() intentionally doesn't do this (see its comment) - a
+ * one-off leak on real death/disconnect, but a live type switch can happen
+ * repeatedly in one session, so clean it up here instead of compounding it.
+ * @param {number} playerId
+ */
+function removeFromPlayerMeshes(playerId) {
+    for (let i = ZOR.Game.player_meshes.length - 1; i >= 0; i--) {
+        let mesh = ZOR.Game.player_meshes[i];
+        if (mesh && mesh.player_id === playerId) {
+            ZOR.Game.player_meshes.splice(i, 1);
+        }
+    }
+}
+
+/**
+ * Rebuilds a player's view in place after a live PLAYER<->SPECTATOR switch
+ * (see z_sendSwitchPlayerType / 'player_type_changed'). A view's rendering
+ * assumptions - visibility, camera rig - are baked in at construction time
+ * (see PlayerView's isInvisibleSpectator) and don't update themselves when
+ * type changes, so the only reliable fix is tear down and rebuild. There
+ * will be a visible one-frame blink - this is not a truly seamless swap.
+ * @param {number} playerId
+ * @param {string} newType
+ * @param {Object} position {x,y,z}
+ * @param {number} scale
+ */
+function rebuildPlayerView(playerId, newType, position, scale) {
+    let controller = ZOR.Game.players[playerId];
+    if (!controller) return;
+
+    let wasLocal = controller.is_current_player;
+
+    controller.model.type = newType;
+    controller.model.sphere.position.set(position.x, position.y, position.z);
+    controller.model.sphere.scale = scale;
+
+    if (controller.view) {
+        removeFromPlayerMeshes(playerId);
+        controller.removeView();
+    }
+    controller.initView(scene);
+
+    if (wasLocal) {
+        // becoming a PLAYER always relocates to a fresh safe spawn point far
+        // from wherever the spectator was floating - snap the camera there,
+        // same as a normal respawn. Becoming a SPECTATOR keeps position as-is,
+        // so leave the camera where it already is.
+        if (newType === ZOR.PlayerTypes.PLAYER) {
+            camera.position.copy( controller.view.mainSphere.position.clone().multiplyScalar(1.2) );
+        }
+
+        if (config.STEERING.NAME === 'FOLLOW') {
+            camera_controls.target = controller.view.mainSphere.position;
+        }
+        else if (config.STEERING.NAME === 'DRAG') {
+            camera_controls.target = controller.view.mainSphere;
+        }
+
+        controller.setCameraControls(camera_controls);
+        controller.view.adjustCamera(controller.radius());
+    }
 }
 
 /**
@@ -537,6 +776,134 @@ function updateTargetLock() {
 let throttledUpdateTargetLock = _.throttle(updateTargetLock, 100);
 
 /**
+ * Spectator debug tool: press T while looking at a bot/player to draw a
+ * persistent tube of its recent movement, for eyeballing bot behavior.
+ * Press T again on the same target to stop.
+ *
+ * Two things that look like the obvious approach here don't work well:
+ *  - Reusing player.getTargetLock() (the existing crosshair HUD) is too
+ *    fragile - updateTargetLock() clears it to 0 the instant aim drifts even
+ *    slightly off the target, so pressing T a frame after that happens
+ *    silently no-ops. toggleTrackTarget() below does its own fresh raycast
+ *    at keypress time instead of trusting that stateful value.
+ *  - A THREE.Line is effectively invisible here: WebGL caps line width at
+ *    ~1px on most GPU drivers regardless of the `linewidth` material
+ *    property, and a 1px line viewed nearly end-on (which happens a lot when
+ *    you're looking *at* the thing whose path you're drawing) all but
+ *    disappears. A real tube mesh has actual radius and is visible from any
+ *    angle, so that's what's built below instead.
+ */
+let pathTracker = {
+    targetId : null,
+    positions: [],
+    maxPoints: 600, // sampled at 10Hz below - 600 points = ~60s of recent path
+    mesh     : null,
+};
+
+function clearPathTracking() {
+    if (pathTracker.mesh) {
+        scene.remove(pathTracker.mesh);
+        pathTracker.mesh.geometry.dispose();
+        pathTracker.mesh.material.dispose();
+    }
+    pathTracker.targetId  = null;
+    pathTracker.positions = [];
+    pathTracker.mesh      = null;
+    ZOR.UI.engine.set('tracked_bot_name', null);
+}
+
+function startPathTracking(targetId, name) {
+    clearPathTracking();
+    pathTracker.targetId = targetId;
+    ZOR.UI.engine.set('tracked_bot_name', name);
+}
+
+/**
+ * Toggles path tracking on/off for whatever's dead-center in the spectator's
+ * view right now - a fresh raycast, not the stateful target-lock HUD value
+ * (see the comment above pathTracker for why).
+ */
+function toggleTrackTarget() {
+    let intersects = raycaster.intersectObjects( ZOR.Game.player_meshes );
+    if (!intersects || !intersects.length) return;
+
+    let targetId = intersects[0].object.player_id;
+    if (!targetId || targetId === player.model.id) return;
+
+    if (pathTracker.targetId === targetId) {
+        clearPathTracking();
+        return;
+    }
+
+    let targetPlayer = ZOR.Game.players[targetId];
+    if (targetPlayer) {
+        startPathTracking(targetId, targetPlayer.model.name);
+    }
+}
+
+/**
+ * Samples the tracked player's current position and rebuilds the path tube
+ * from the full point history. Throttled to 10Hz - full-rAF-rate (~60Hz)
+ * sampling would rebuild this geometry every frame for no benefit, since
+ * "recent path" doesn't need frame-perfect resolution.
+ */
+let sampleTrackedPosition = _.throttle(function sampleTrackedPosition() {
+    let tracked = ZOR.Game.players[pathTracker.targetId];
+    if (!tracked || !tracked.view) {
+        // tracked bot was captured/removed - stop rather than point at nothing
+        clearPathTracking();
+        return;
+    }
+
+    pathTracker.positions.push(tracked.view.mainSphere.position.clone());
+    if (pathTracker.positions.length > pathTracker.maxPoints) {
+        pathTracker.positions.shift();
+    }
+
+    if (pathTracker.mesh) {
+        scene.remove(pathTracker.mesh);
+        pathTracker.mesh.geometry.dispose();
+        pathTracker.mesh.material.dispose();
+        pathTracker.mesh = null;
+    }
+
+    // TubeGeometry needs at least 2 distinct points to build a curve
+    if (pathTracker.positions.length < 2) return;
+
+    let curve = new THREE.CatmullRomCurve3(pathTracker.positions);
+    let segments = Math.max(1, pathTracker.positions.length - 1);
+    let geometry = new THREE.TubeBufferGeometry(curve, segments, 1.5, 6, false);
+    let material = new THREE.MeshBasicMaterial({ color: 0xffff00, fog: false });
+
+    pathTracker.mesh = new THREE.Mesh(geometry, material);
+    scene.add(pathTracker.mesh);
+}, 100);
+
+/**
+ * Cheap no-op when nothing is being tracked; otherwise throttled below.
+ */
+function updatePathTracking() {
+    if (!pathTracker.targetId) return;
+    sampleTrackedPosition();
+}
+
+/**
+ * Spectator-only hotkeys, separate from the admin ones above since
+ * spectating isn't admin-gated:
+ *   T - toggle path tracking on whatever bot/player is centered in view
+ * @param {Object} evt
+ */
+function handleSpectatorHotkeys(evt) {
+    if (!gameStart || !player || player.model.type !== ZOR.PlayerTypes.SPECTATOR) return;
+
+    if (evt.key === 't' || evt.key === 'T') {
+        toggleTrackTarget();
+    }
+}
+
+window.addEventListener('keydown', handleSpectatorHotkeys);
+
+/**
  * Sends the player update message to the server throttled to tick fast interval
  */
 function sendPlayerUpdate() {
@@ -635,6 +1002,7 @@ function handleKeyup(evt) {
  */
 function handleMouseDown(evt) {
     if (!gameStart || player.isDead) return;
+    if (player.model.type === ZOR.PlayerTypes.SPECTATOR) return;
 
     if (config.AUTO_RUN_ENABLED && !isMobile.any) {
         if (evt.button === 0 && config.STEERING === config.STEERING_METHODS.MOUSE_FOLLOW) {
@@ -654,6 +1022,7 @@ function handleMouseDown(evt) {
  */
 function handleMouseUp(evt) {
     if (!gameStart || player.isDead) return;
+    if (player.model.type === ZOR.PlayerTypes.SPECTATOR) return;
 
     if (config.AUTO_RUN_ENABLED && !isMobile.any) {
         if (evt.button === 0  && config.STEERING === config.STEERING_METHODS.MOUSE_FOLLOW) {
@@ -682,6 +1051,17 @@ function handleKeysDown() {
  * @param {string} key
  */
 function keyDown( key ) {
+    if (player.model.type === ZOR.PlayerTypes.SPECTATOR) {
+        // free-fly: only move while a key is actually held, never auto-run
+        if (key === 'w') {
+            player.moveForward(camera);
+        }
+        else if (key === 's') {
+            player.moveBackward(camera);
+        }
+        return;
+    }
+
     if ( key === 'w' && !config.AUTO_RUN_ENABLED) {
         player.moveForward(camera);
     }
@@ -700,6 +1080,8 @@ function keyDown( key ) {
  * @param {string} key
  */
 function keyJustPressed(key) {
+    if (player.model.type === ZOR.PlayerTypes.SPECTATOR) return;
+
     if ( key === 'w' && config.AUTO_RUN_ENABLED) {
         if (player.isSpeedBoostReady()) {
             zorClient.z_sendSpeedBoostStart();
@@ -712,6 +1094,8 @@ function keyJustPressed(key) {
  * @param {string} key
  */
 function keyReleased(key) {
+    if (player.model.type === ZOR.PlayerTypes.SPECTATOR) return;
+
     if (config.AUTO_RUN_ENABLED) {
         switch (key) {
             case 'w':

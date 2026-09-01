@@ -7,6 +7,8 @@ let Drain         = require( './Drain.js' );
 let WebSocket     = require( 'ws' );
 let BotController = require( './BotController.js' );
 let ServerPlayer  = require( './ServerPlayer.js' );
+let SessionLogger = require( './SessionLogger.js' );
+let RLState       = require( '../common/RLState.js' );
 let Schemas       = require( '../common/schemas.js' );
 let perfNow       = require( 'performance-now' );
 let uuid          = require( 'node-uuid' );
@@ -14,6 +16,8 @@ let cookie        = require( 'cookie' );
 let Backend       = require( './Backend.js' );
 let _             = require( 'lodash' );
 let SkinCatalog   = require( '../common/SkinCatalog' );
+let fs            = require( 'fs' );
+let path          = require( 'path' );
 
 /**
  * This module contains all of the app logic and state
@@ -144,25 +148,16 @@ let AppServer = function(id, app, server_label, port) {
                     return;  // ignore
                 }
 
-                switch (message.op) {
-                    case 'enter_game':
-                        handle_enter_game( message );
-                        break;
-                    case 'respawn':
-                        handle_msg_respawn();
-                        break;
-                    case 'player_ready':
-                        handle_msg_player_ready();
-                        break;
-                    case 'zor_ping':
-                        handle_msg_zor_ping( message );
-                        break;
-                    case 'speed_boost_start':
-                        handle_msg_speed_boost_start();
-                        break;
-                    case 'speed_boost_stop':
-                        handle_msg_speed_boost_stop();
-                        break;
+                try {
+                    dispatch_json_message( message );
+                }
+                catch (e) {
+                    // An uncaught exception here would otherwise bubble out of
+                    // this event handler and crash the *entire* server process
+                    // for every connected player (Node has no default recovery
+                    // from an uncaught exception in an event callback) - one
+                    // bad handler/message should never be able to do that.
+                    console.error( '[AppServer] Caught exception handling message op', message.op, e );
                 }
             }
             else if (msg.readUInt8 /* faster than instanceof Buffer */) {
@@ -188,6 +183,67 @@ let AppServer = function(id, app, server_label, port) {
             }
         } );
 
+        /**
+         * Dispatches a parsed JSON message to its handler. Split out from
+         * ws.on('message') so the try/catch above covers every case here.
+         * @param {Object} message
+         */
+        function dispatch_json_message(message) {
+            switch (message.op) {
+                case 'enter_game':
+                    handle_enter_game( message );
+                    break;
+                case 'respawn':
+                    handle_msg_respawn();
+                    break;
+                case 'player_ready':
+                    handle_msg_player_ready();
+                    break;
+                case 'zor_ping':
+                    handle_msg_zor_ping( message );
+                    break;
+                case 'speed_boost_start':
+                    handle_msg_speed_boost_start();
+                    break;
+                case 'speed_boost_stop':
+                    handle_msg_speed_boost_stop();
+                    break;
+                case 'admin_set_bots_enabled':
+                    handle_msg_admin_set_bots_enabled( message );
+                    break;
+                case 'admin_set_rl_enabled':
+                    handle_msg_admin_set_rl_enabled( message );
+                    break;
+                case 'admin_set_paused':
+                    handle_msg_admin_set_paused( message );
+                    break;
+                case 'admin_set_max_bots':
+                    handle_msg_admin_set_max_bots( message );
+                    break;
+                case 'admin_set_rl_threshold':
+                    handle_msg_admin_set_rl_threshold( message );
+                    break;
+                case 'admin_debug_stats_request':
+                    handle_msg_admin_debug_stats_request();
+                    break;
+                case 'admin_reset_bots':
+                    handle_msg_admin_reset_bots();
+                    break;
+                case 'admin_apply_world_settings':
+                    handle_msg_admin_apply_world_settings( message );
+                    break;
+                case 'admin_set_bot_max_spawn_scale':
+                    handle_msg_admin_set_bot_max_spawn_scale( message );
+                    break;
+                case 'switch_player_type':
+                    handle_msg_switch_player_type( message );
+                    break;
+                case 'admin_set_bots_can_eat_bots':
+                    handle_msg_admin_set_bots_can_eat_bots( message );
+                    break;
+            }
+        }
+
         ws.on( 'close', function wsClose() {
             handle_close();
         } );
@@ -203,7 +259,8 @@ let AppServer = function(id, app, server_label, port) {
          */
         function handle_enter_game(msg) {
             player_id = Zorbio.IdGenerator.get_next_id();
-            type      = msg.type;
+            // whitelist the client-supplied type - only PLAYER or SPECTATOR are valid to self-select
+            type      = msg.type === Zorbio.PlayerTypes.SPECTATOR ? Zorbio.PlayerTypes.SPECTATOR : Zorbio.PlayerTypes.PLAYER;
             name      = msg.name;
             color     = msg.color;
             skin      = SkinCatalog[msg.skin] ? msg.skin : 'default';  // validate skin name
@@ -236,6 +293,7 @@ let AppServer = function(id, app, server_label, port) {
             currentPlayer             = new ServerPlayer( player_id, name, color, skin, type, position, ws );
             currentPlayer.headers     = headers;
             currentPlayer.socket_uuid = socket_uuid;
+            currentPlayer.isAdmin     = config.ADMIN_NAMES.indexOf( name.toLowerCase() ) !== -1;
 
             // See if this is PAUL LYONS
             if (name === 'PAUL LYONS' && skin === 'lyons') {
@@ -253,7 +311,256 @@ let AppServer = function(id, app, server_label, port) {
             let buffer = Schemas.welcomeSchema.encode( msg );
             ws.send( buffer );
 
+            if (currentPlayer.isAdmin) {
+                send_admin_status();
+            }
+
             self.log( 'User ' + currentPlayer.id + ' spawning into the game' );
+        }
+
+        /**
+         * Sends the current admin-controllable bot state to this socket. Only meaningful
+         * for admin players - the client only shows the admin panel when is_admin is true.
+         */
+        function send_admin_status() {
+            ws.send( JSON.stringify( {
+                op            : 'admin_status',
+                is_admin      : true,
+                bots_enabled  : self.botController.enabled,
+                rl_enabled    : self.botController.rlEnabled,
+                paused        : self.paused,
+                max_bots      : config.MAX_BOTS,
+                rl_threshold  : config.RL_BOT_SIZE_THRESHOLD,
+                bot_max_spawn_scale: config.BOT_MAX_SPAWN_SCALE,
+                bots_can_eat_bots: config.BOTS_CAN_EAT_BOTS,
+                world_size    : config.WORLD_SIZE,
+                food_density  : config.FOOD_DENSITY,
+            } ) );
+        }
+
+        /**
+         * Sends a snapshot of every player/bot's food and player capture
+         * counts, for the admin debug panel. Not part of the regular actor
+         * broadcast (which is a fixed binary schema) - this is a plain JSON
+         * message sent only on request, only to admins.
+         */
+        function send_admin_debug_stats() {
+            let stats = self.model.players.map( function( p ) {
+                return {
+                    id            : p.id,
+                    name          : p.name,
+                    type          : p.type,
+                    scale         : Math.round( p.sphere.scale ),
+                    foodCaptures  : p.foodCaptures,
+                    playerCaptures: p.playerCaptures,
+                };
+            } );
+
+            ws.send( JSON.stringify( { op: 'admin_debug_stats', stats: stats } ) );
+        }
+
+        /**
+         * Handles an admin toggling bots on/off. Ignored for non-admin players.
+         * @param {Object} msg
+         */
+        function handle_msg_admin_set_bots_enabled(msg) {
+            if (!currentPlayer || !currentPlayer.isAdmin) return;
+
+            self.botController.setEnabled( !!msg.value );
+            self.log( 'Admin', currentPlayer.id, 'set bots enabled:', self.botController.enabled );
+            send_admin_status();
+        }
+
+        /**
+         * Handles an admin toggling the RL movement pattern for large bots. Ignored for
+         * non-admin players.
+         * @param {Object} msg
+         */
+        function handle_msg_admin_set_rl_enabled(msg) {
+            if (!currentPlayer || !currentPlayer.isAdmin) return;
+
+            self.botController.setRlEnabled( !!msg.value );
+            self.log( 'Admin', currentPlayer.id, 'set RL bots enabled:', self.botController.rlEnabled );
+            send_admin_status();
+        }
+
+        /**
+         * Handles an admin toggling whether bots can capture (eat) each
+         * other, not just humans. Off by default - population turns over
+         * fast once bots start eating bots, but replenishBot() already
+         * backfills losses (see captureBot), so it's self-stabilizing.
+         * @param {Object} msg
+         */
+        function handle_msg_admin_set_bots_can_eat_bots(msg) {
+            if (!currentPlayer || !currentPlayer.isAdmin) return;
+
+            config.BOTS_CAN_EAT_BOTS = !!msg.value;
+            self.log( 'Admin', currentPlayer.id, 'set bots can eat bots:', config.BOTS_CAN_EAT_BOTS );
+            send_admin_status();
+        }
+
+        /**
+         * Handles an admin opening/closing the mod menu - freezes bot movement
+         * and player/bot captures while open so parameters can be adjusted
+         * without the world (or the admin) changing under them. This is a
+         * server-wide pause, not per-player - on a private dev server with a
+         * single admin that's an acceptable tradeoff, but it will also freeze
+         * any other connected player's game.
+         * @param {Object} msg
+         */
+        function handle_msg_admin_set_paused(msg) {
+            if (!currentPlayer || !currentPlayer.isAdmin) return;
+
+            self.paused = !!msg.value;
+            self.log( 'Admin', currentPlayer.id, 'set paused:', self.paused );
+            send_admin_status();
+        }
+
+        /**
+         * Handles an admin adjusting the desired bot population live. Spawns
+         * or despawns immediately to match, rather than waiting for the next
+         * capture/disconnect to notice the new value.
+         * @param {Object} msg
+         */
+        function handle_msg_admin_set_max_bots(msg) {
+            if (!currentPlayer || !currentPlayer.isAdmin) return;
+
+            let value = Math.max( 0, Math.min( 50, parseInt( msg.value, 10 ) || 0 ) );
+            self.applyMaxBots( value );
+            self.log( 'Admin', currentPlayer.id, 'set max bots:', config.MAX_BOTS );
+            send_admin_status();
+        }
+
+        /**
+         * Handles an admin adjusting the size threshold above which bots use
+         * the 'hunt'/'rl' pattern instead of a random curve. Only affects
+         * bots spawned after the change.
+         * @param {Object} msg
+         */
+        function handle_msg_admin_set_rl_threshold(msg) {
+            if (!currentPlayer || !currentPlayer.isAdmin) return;
+
+            let value = Math.max( 1, Math.min( 200, parseInt( msg.value, 10 ) || config.RL_BOT_SIZE_THRESHOLD ) );
+            config.RL_BOT_SIZE_THRESHOLD = value;
+            self.log( 'Admin', currentPlayer.id, 'set RL bot size threshold:', value );
+            send_admin_status();
+        }
+
+        /**
+         * Handles an admin adjusting the cap on newly-spawned bot size. The
+         * spawn curve always makes the first bot after a reset the biggest -
+         * lowering this flattens that "one guaranteed giant bot" pattern.
+         * Only affects bots spawned after the change.
+         * @param {Object} msg
+         */
+        function handle_msg_admin_set_bot_max_spawn_scale(msg) {
+            if (!currentPlayer || !currentPlayer.isAdmin) return;
+
+            let value = Math.max( 10, Math.min( 150, parseInt( msg.value, 10 ) || config.BOT_MAX_SPAWN_SCALE ) );
+            config.BOT_MAX_SPAWN_SCALE = value;
+            self.log( 'Admin', currentPlayer.id, 'set bot max spawn scale:', value );
+            send_admin_status();
+        }
+
+        /**
+         * Switches the current connection between PLAYER and SPECTATOR
+         * without a disconnect/rejoin. Available to anyone, not just admins -
+         * spectating already is. Becoming a SPECTATOR keeps position as-is;
+         * becoming a PLAYER always respawns small at a fresh safe position -
+         * resuming at whatever size/location the spectator had would let
+         * someone dodge into spectator mode when threatened and pop back
+         * safe, which defeats the point of it being a non-competitive mode.
+         * @param {Object} msg
+         */
+        function handle_msg_switch_player_type(msg) {
+            if (!currentPlayer) return;
+
+            let newType = msg.value === Zorbio.PlayerTypes.SPECTATOR
+                ? Zorbio.PlayerTypes.SPECTATOR : Zorbio.PlayerTypes.PLAYER;
+
+            if (newType === currentPlayer.type) return;
+
+            if (newType === Zorbio.PlayerTypes.PLAYER) {
+                let position = self.model.getSafeSpawnPosition( 10 );
+                currentPlayer.sphere.position.copy( position );
+                // sphere.velocity is a plain {x,y,z} object, not a THREE.Vector3
+                // (ServerPlayer never passes one at construction) - no .set() method
+                currentPlayer.sphere.velocity.x = 0;
+                currentPlayer.sphere.velocity.y = 0;
+                currentPlayer.sphere.velocity.z = 0;
+                currentPlayer.sphere.recentPositions = [];
+                currentPlayer.sphere.scale = config.INITIAL_PLAYER_RADIUS;
+                currentPlayer.sphere.expectedScale = config.INITIAL_PLAYER_RADIUS;
+                currentPlayer.score = currentPlayer.sphere.scale;
+                currentPlayer.foodCaptures = 0;
+                currentPlayer.playerCaptures = 0;
+            }
+
+            currentPlayer.type = newType;
+            type = newType; // keep this connection's closure-local `type` in sync for later handlers
+
+            self.log( 'Player', currentPlayer.id, 'switched type to', newType );
+
+            // tell every client (including this one) to rebuild this
+            // player's view - a live type change invalidates assumptions
+            // (visibility, movement rules) baked in when the view was built
+            self.broadcast( JSON.stringify( {
+                op      : 'player_type_changed',
+                playerId: currentPlayer.id,
+                type    : newType,
+                position: currentPlayer.sphere.position,
+                scale   : currentPlayer.sphere.scale,
+            } ) );
+        }
+
+        function handle_msg_admin_debug_stats_request() {
+            if (!currentPlayer || !currentPlayer.isAdmin) return;
+
+            send_admin_debug_stats();
+        }
+
+        /**
+         * Clears and respawns every bot at the current world settings - no
+         * restart needed, since this doesn't touch food/world size, just the
+         * live bot list. Useful for clearing out bots that grew oversized
+         * during testing without wanting a full environment reset.
+         */
+        function handle_msg_admin_reset_bots() {
+            if (!currentPlayer || !currentPlayer.isAdmin) return;
+
+            self.resetAllBots();
+            self.log( 'Admin', currentPlayer.id, 'reset all bots' );
+            send_admin_debug_stats();
+        }
+
+        /**
+         * Applies a new world size / food density by writing them into
+         * common/config.js on disk and letting supervisor's file-watch
+         * restart the server process - the process itself isn't killed by
+         * this code, just the file is edited. Every connected client
+         * (including this one) will see its socket close a moment later and
+         * auto-reload (see z_handleNetworkTermination) to rejoin the fresh
+         * environment. This can't be done live: the food buffer size and
+         * world bounds are baked into every connected client's scene at
+         * join time, so a live resize would desync anyone already connected.
+         * @param {Object} msg
+         */
+        function handle_msg_admin_apply_world_settings(msg) {
+            if (!currentPlayer || !currentPlayer.isAdmin) return;
+
+            let worldSize   = Math.max( 500, Math.min( 3000, parseInt( msg.world_size, 10 ) || config.WORLD_SIZE ) );
+            let foodDensity = Math.max( 5, Math.min( 45, parseInt( msg.food_density, 10 ) || config.FOOD_DENSITY ) );
+
+            self.log( 'Admin', currentPlayer.id, 'applying world_size:', worldSize,
+                'food_density:', foodDensity, '- this will restart the server' );
+
+            let configPath = path.join( __dirname, '..', 'common', 'config.js' );
+            let src         = fs.readFileSync( configPath, 'utf8' );
+
+            src = src.replace( /(config\.WORLD_SIZE\s*=\s*)\d+(;)/, '$1' + worldSize + '$2' );
+            src = src.replace( /(config\.FOOD_DENSITY\s*=\s*)\d+(;)/, '$1' + foodDensity + '$2' );
+
+            fs.writeFileSync( configPath, src );
         }
 
         /**
@@ -285,8 +592,10 @@ let AppServer = function(id, app, server_label, port) {
                 self.log( 'Player ' + currentPlayer.id + ' joined game!' );
                 self.log( 'Total real players: ' + self.model.getRealPlayers().length );
 
-                // see if we need to remove a bot
-                if (self.botController.hasBots() && playerCount > config.MAX_BOTS) {
+                // see if we need to remove a bot - spectators don't take a slot, so they
+                // never bump a bot out to make room
+                if (currentPlayer.type !== Zorbio.PlayerTypes.SPECTATOR &&
+                    self.botController.hasBots() && playerCount > config.MAX_BOTS) {
                     let bot = self.botController.popBot();
 
                     // notify other players that this bot was removed
@@ -429,6 +738,17 @@ let AppServer = function(id, app, server_label, port) {
         function handle_close() {
             self.removePlayerSocket( socket_uuid );
 
+            // Safety net: if the admin who paused the world (opened the mod
+            // menu) disconnects before their client manages to send the
+            // unpause - e.g. leaveGameGracefully() closes the socket before
+            // the resulting state change tries to send it, or a crash/tab
+            // close skips that entirely - the world would otherwise stay
+            // frozen forever, since nothing else ever clears self.paused.
+            if (currentPlayer && currentPlayer.isAdmin && self.paused) {
+                self.paused = false;
+                self.log( 'Admin', player_id, 'disconnected while paused - auto-unpausing' );
+            }
+
             if (player_id) {
                 self.log( 'Player connection closed for player_id:', player_id );
 
@@ -523,8 +843,8 @@ let AppServer = function(id, app, server_label, port) {
                 let drainee_player      = self.model.getPlayerById( drainee_id );
                 drainee                 = drainee_player.sphere;
 
-                // Bots can't drain eachother
-                if (player.type !== Zorbio.PlayerTypes.BOT || drainee_player.type !== Zorbio.PlayerTypes.BOT) {
+                if (config.BOTS_CAN_DRAIN_BOTS
+                    || player.type !== Zorbio.PlayerTypes.BOT || drainee_player.type !== Zorbio.PlayerTypes.BOT) {
                     drain_amount = Drain.amount( drain_target.dist )
                         * Drain.bonusAmount( drainer.scale, drainee.scale );
 
@@ -673,6 +993,9 @@ let AppServer = function(id, app, server_label, port) {
      * @returns {*} returns folse if no capture, other wise the ids of attacking and target players
      */
     self.checkPlayerCapture = function appCheckPlayerCapture(p1, p2) {
+        // Spectators are pure observers - they can neither capture nor be captured
+        if (p1.type === Zorbio.PlayerTypes.SPECTATOR || p2.type === Zorbio.PlayerTypes.SPECTATOR) return false;
+
         let p1_scale;
         let p2_scale;
         let distance;
@@ -715,8 +1038,9 @@ let AppServer = function(id, app, server_label, port) {
             return;
         }
 
-        if (attackingPlayer.type === Zorbio.PlayerTypes.BOT && targetPlayer.type === Zorbio.PlayerTypes.BOT) {
-            // Don't allow bots to capture each other
+        if (!config.BOTS_CAN_EAT_BOTS
+            && attackingPlayer.type === Zorbio.PlayerTypes.BOT && targetPlayer.type === Zorbio.PlayerTypes.BOT) {
+            // Bots don't capture each other by default - admin-adjustable live
             return;
         }
 
@@ -766,6 +1090,10 @@ let AppServer = function(id, app, server_label, port) {
 
             // Save score to leaderboard if they got any points
             self.savePlayerScore( targetPlayer.name, score, self.clients[self.socket_uuid_map[targetPlayerId]] );
+
+            // Tag this death in the training log so bad play (e.g. getting
+            // caught by another player) can be excluded from behavioral cloning
+            self.sessionLogger.logDeath( targetPlayer, attackingPlayer );
         }
         else {
             self.captureBot(targetPlayerId);
@@ -864,6 +1192,9 @@ let AppServer = function(id, app, server_label, port) {
 
         // Iterate over all players and perform checks
         self.model.players.forEach( function performPlayerChecks(player) {
+            // Spectators don't score, don't accrue infractions, and don't appear on the leaderboard
+            if (player.type === Zorbio.PlayerTypes.SPECTATOR) return;
+
             let id = player.id;
 
             // Expire speed infractions
@@ -979,12 +1310,31 @@ let AppServer = function(id, app, server_label, port) {
      * Main server loop for general updates to the client that should be as fast as
      * possible, eg movement and player capture.
      */
+    // Admin-only: freezes bot movement and all captures/drains while the mod
+    // menu is open (see handle_msg_admin_set_paused), so parameters can be
+    // adjusted without anything moving or dying in the meantime. Position
+    // updates and session logging keep running so connected clients don't
+    // desync and training data doesn't gap.
+    self.paused = false;
+
     self.serverTickFast = function appServerTickFast() {
         let start = perfNow();
         self.playerUpdates();
-        self.botController.update();
-        self.updatePlayerCaptures();
-        self.updateActorDrains( Drain.findAll( self.model.players ) );
+        RLState.updateVelocities( self.model );
+        self.sessionLogger.logTick( self.model );
+
+        if (!self.paused) {
+            self.botController.update();
+            self.updatePlayerCaptures();
+            self.updateActorDrains( Drain.findAll( self.model.players ) );
+
+            if (Date.now() - self.lastBotResetTime >= config.RL_POPULATION_RESET_INTERVAL_MS) {
+                self.resetAllBots();
+                self.lastBotResetTime = Date.now();
+                self.log( 'Automatic periodic bot population reset (RL_POPULATION_RESET_INTERVAL_MS)' );
+            }
+        }
+
         self.sendActorUpdates();
         self.logServerStatusNth( start );
     };
@@ -996,9 +1346,42 @@ let AppServer = function(id, app, server_label, port) {
     self.serverTickSlow = function appServerTickSlow() {
         self.checkHeartbeats();
         self.updateFoodRespawns();
+        if (!self.paused) self.checkBotFoodCaptures();
         self.playersChecks();
         self.sendServerTickData();
         Zorbio.expireLocks();
+    };
+
+    /**
+     * Real players report the food they've touched over the wire
+     * (msg.food_capture_queue -> self.foodCapture), but bots have no client
+     * to report anything - without this, bots can never grow from food at
+     * all, only from capturing other players. Runs on the slow (5Hz) tick
+     * rather than the fast one since it's an O(bots * foodCount) scan and
+     * food capture doesn't need to be instant.
+     */
+    self.checkBotFoodCaptures = function appCheckBotFoodCaptures() {
+        let food = self.model.food;
+        if (!food || !food.length || !self.botController.bots.length) return;
+
+        self.botController.bots.forEach(function(bot) {
+            let sphere    = bot.player.sphere;
+            let pos       = sphere.position;
+            let tolerance = sphere.scale + config.FOOD_CAPTURE_ASSIST + config.FOOD_CAPTURE_EXTRA_TOLERANCE;
+            let toleranceSq = tolerance * tolerance;
+
+            for (let i = 0, fi = 0; i < food.length; i += 3, fi++) {
+                if (self.model.food_respawning[fi]) continue; // already eaten, respawning
+
+                let dx = food[i]     - pos.x;
+                let dy = food[i + 1] - pos.y;
+                let dz = food[i + 2] - pos.z;
+
+                if ((dx * dx + dy * dy + dz * dz) <= toleranceSq) {
+                    self.foodCapture( bot.player, fi, sphere, sphere.scale );
+                }
+            }
+        });
     };
 
     self.getClientCount = function appGetClientCount() {
@@ -1025,12 +1408,38 @@ let AppServer = function(id, app, server_label, port) {
     };
 
     /**
+     * Admin-adjustable desired bot population (config.MAX_BOTS). Reconciles
+     * the live bot count immediately - spawning or despawning - rather than
+     * waiting for the next capture/disconnect to notice the new value.
+     * @param {number} newMax
+     */
+    self.applyMaxBots = function appApplyMaxBots(newMax) {
+        config.MAX_BOTS = newMax;
+
+        while (self.botController.bots.length > newMax) {
+            let bot = self.botController.popBot();
+            if (!bot) break;
+            // without this, already-connected clients are never told the bot
+            // is gone - it just sits at its last known position forever
+            // ("ghost bot"), since it stops appearing in actor updates but
+            // was never explicitly removed from their scene
+            self.broadcast( JSON.stringify( { op: 'remove_player', playerId: bot.player.id } ) );
+        }
+        while (self.botController.bots.length < newMax) {
+            let bot = self.botController.spawnBot();
+            if (!bot) break;
+            self.broadcast( JSON.stringify( { op: 'player_join', player: bot.player } ) );
+        }
+    };
+
+    /**
      * Adds a bot to the game if the population is to low
      */
     self.replenishBot = function appReplenishBot() {
         // bot was captured, lets see if we need to spawn another to replace it
         if (self.model.players.length < config.MAX_BOTS) {
             let bot = self.botController.spawnBot();
+            if (!bot) return; // bots are admin-disabled
 
             // Notify other clients that bot has joined
             self.broadcast( JSON.stringify( { op: 'player_join', player: bot.player } ) );
@@ -1043,6 +1452,29 @@ let AppServer = function(id, app, server_label, port) {
     };
 
     self.botController = new BotController( self.model );
+    self.sessionLogger = new SessionLogger();
+
+    /**
+     * Clears and respawns every bot at the current world settings. Shared by
+     * the admin "reset bots" button and the automatic periodic reset in
+     * serverTickFast (see RL_POPULATION_RESET_INTERVAL_MS) - both just need
+     * a clean population, the only difference is what triggered it.
+     */
+    self.resetAllBots = function appServerResetAllBots() {
+        let desired = config.MAX_BOTS;
+
+        while (self.botController.bots.length) {
+            let bot = self.botController.popBot();
+            self.broadcast( JSON.stringify( { op: 'remove_player', playerId: bot.player.id } ) );
+        }
+        for (let i = 0; i < desired; i++) {
+            let bot = self.botController.spawnBot();
+            if (!bot) break;
+            self.broadcast( JSON.stringify( { op: 'player_join', player: bot.player } ) );
+        }
+    };
+
+    self.lastBotResetTime = Date.now();
 
     // Start game loops
     gameloop.setGameLoop( self.serverTickFast, config.TICK_FAST_INTERVAL );

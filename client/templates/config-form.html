@@ -21,6 +21,69 @@
     <input type="checkbox" {{ hide_own_trail ? 'checked' : '' }} on-click="@this.fire( ACTIONS.TOGGLE_OWN_TRAIL, @event )" id="hide-own-trail">
     <label for="hide-own-trail">Hide own trail</label>
 </div>
+{{ #if is_admin }}
+<hr>
+<h1>Admin{{ #if state === STATES.PLAYING_CONFIG }} (game paused){{ /if }}</h1>
+<div>
+    <input type="checkbox" {{ admin_bots_enabled ? 'checked' : '' }} on-click="@this.fire( ACTIONS.ADMIN_TOGGLE_BOTS, @event )" id="admin-bots-enabled">
+    <label for="admin-bots-enabled">Bots enabled</label>
+</div>
+<div>
+    <input type="checkbox" {{ admin_rl_enabled ? 'checked' : '' }} on-click="@this.fire( ACTIONS.ADMIN_TOGGLE_RL_BOTS, @event )" id="admin-rl-enabled">
+    <label for="admin-rl-enabled">Use trained RL bots</label>
+</div>
+<div>
+    <input id="admin-max-bots" type="number" min="0" max="50" step="1" value="{{ admin_max_bots }}" on-change="@this.fire( ACTIONS.ADMIN_SET_MAX_BOTS, @event )">
+    <label for="admin-max-bots">Max bots</label>
+</div>
+<div>
+    <input id="admin-rl-threshold" type="number" min="1" max="200" step="1" value="{{ admin_rl_threshold }}" on-change="@this.fire( ACTIONS.ADMIN_SET_RL_THRESHOLD, @event )">
+    <label for="admin-rl-threshold">Bot size to go hunt/RL (new bots only)</label>
+</div>
+<div>
+    <input id="admin-bot-max-spawn-scale" type="number" min="10" max="150" step="5" value="{{ admin_bot_max_spawn_scale }}" on-change="@this.fire( ACTIONS.ADMIN_SET_BOT_MAX_SPAWN_SCALE, @event )">
+    <label for="admin-bot-max-spawn-scale">Max bot spawn size (lower = no guaranteed giant bot, new bots only)</label>
+</div>
+<div>
+    <input type="checkbox" {{ admin_bots_can_eat_bots ? 'checked' : '' }} on-click="@this.fire( ACTIONS.ADMIN_TOGGLE_BOTS_CAN_EAT_BOTS, @event )" id="admin-bots-can-eat-bots">
+    <label for="admin-bots-can-eat-bots">Bots can eat bots</label>
+</div>
+
+<div>
+    <input id="admin-world-size" type="number" min="500" max="3000" step="100" value="{{ admin_world_size_draft }}" on-change="@this.fire( ACTIONS.ADMIN_EDIT_WORLD_SIZE, @event )">
+    <label for="admin-world-size">World size (currently {{ admin_world_size }})</label>
+</div>
+<div>
+    <input id="admin-food-density" type="number" min="5" max="45" step="1" value="{{ admin_food_density_draft }}" on-change="@this.fire( ACTIONS.ADMIN_EDIT_FOOD_DENSITY, @event )">
+    <label for="admin-food-density">Food density (currently {{ admin_food_density }})</label>
+</div>
+<div class="admin-readonly-row">
+    <button on-click="@this.fire( ACTIONS.ADMIN_APPLY_WORLD_SETTINGS )">Apply &amp; restart environment</button>
+    <br><small>Restarts the server process and reconnects everyone (including you) - takes a few seconds.</small>
+</div>
+<div>
+    <button on-click="@this.fire( ACTIONS.ADMIN_RESET_BOTS )">Reset bots</button>
+    <button on-click="@this.fire( ACTIONS.ADMIN_REFRESH_DEBUG_STATS )">Refresh stats</button>
+</div>
+{{ #if admin_debug_stats.length }}
+<table class="admin-debug-stats">
+    <thead>
+        <tr><th>name</th><th>type</th><th>size</th><th>food</th><th>kills</th></tr>
+    </thead>
+    <tbody>
+        {{ #each admin_debug_stats }}
+        <tr>
+            <td>{{ name }}</td>
+            <td>{{ type }}</td>
+            <td>{{ scale }}</td>
+            <td>{{ foodCaptures }}</td>
+            <td>{{ playerCaptures }}</td>
+        </tr>
+        {{ /each }}
+    </tbody>
+</table>
+{{ /if }}
+{{ /if }}
 {{ #if state === STATES.MENU_CONFIG_SCREEN && !is_mobile }}
 <div>
     <select name="steering-method" id="steering-method" on-change="@this.fire( ACTIONS.SET_STEERING, @event )">

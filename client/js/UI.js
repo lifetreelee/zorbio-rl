@@ -13,6 +13,16 @@ global config:true,
  ga:true,
  Modernizr:true,
  respawnPlayer:true,
+ adminSetBotsEnabled:true,
+ adminSetRlEnabled:true,
+ adminSetPaused:true,
+ adminSetMaxBots:true,
+ adminSetRlThreshold:true,
+ adminSetBotMaxSpawnScale:true,
+ adminSetBotsCanEatBots:true,
+ adminRequestDebugStats:true,
+ adminResetBots:true,
+ adminApplyWorldSettings:true,
  Ractive:true,
  adsbygoogle:true
 */
@@ -69,6 +79,7 @@ ZOR.UI = function ZORUI() {
     let ACTIONS = {
         PLAYER_LOGIN_KEYPRESS: 'player-login-keypress',
         PLAYER_LOGIN         : 'player-login',
+        SPECTATE_LOGIN       : 'spectate-login',
         PLAYER_RESPAWN       : 'player-respawn',
         PAGE_RELOAD          : 'page-reload',
         SHOW_MENU            : 'show-menu',
@@ -98,6 +109,18 @@ ZOR.UI = function ZORUI() {
         CURSOR_OFF_GEAR : 'cursor-off-gear',
 
         SET_SKIN: 'set-skin',
+
+        ADMIN_TOGGLE_BOTS    : 'admin-toggle-bots',
+        ADMIN_TOGGLE_RL_BOTS : 'admin-toggle-rl-bots',
+        ADMIN_SET_MAX_BOTS   : 'admin-set-max-bots',
+        ADMIN_SET_RL_THRESHOLD: 'admin-set-rl-threshold',
+        ADMIN_SET_BOT_MAX_SPAWN_SCALE: 'admin-set-bot-max-spawn-scale',
+        ADMIN_TOGGLE_BOTS_CAN_EAT_BOTS: 'admin-toggle-bots-can-eat-bots',
+        ADMIN_REFRESH_DEBUG_STATS: 'admin-refresh-debug-stats',
+        ADMIN_RESET_BOTS     : 'admin-reset-bots',
+        ADMIN_EDIT_WORLD_SIZE: 'admin-edit-world-size',
+        ADMIN_EDIT_FOOD_DENSITY: 'admin-edit-food-density',
+        ADMIN_APPLY_WORLD_SETTINGS: 'admin-apply-world-settings',
     };
 
     /**
@@ -148,6 +171,23 @@ ZOR.UI = function ZORUI() {
         marquee_messages: [],
         marquee_index   : 0,
         target          : undefined,
+
+        // Admin controls - only populated/shown for players in config.ADMIN_NAMES,
+        // see AppServer.js 'admin_status' message and BrowserHandler.js z_handle_admin_status
+        is_admin            : false,
+        admin_bots_enabled  : true,
+        admin_rl_enabled    : false,
+        admin_paused        : false,
+        admin_max_bots      : 20,
+        admin_rl_threshold  : 50,
+        admin_bot_max_spawn_scale: 140,
+        admin_bots_can_eat_bots  : false,
+        admin_world_size    : 0,
+        admin_food_density  : 0,
+        admin_world_size_draft  : 0,
+        admin_food_density_draft: 0,
+        admin_debug_stats   : [],
+        tracked_bot_name    : null,
     };
 
     // the public functions exposes by this module (may be modified during execution)
@@ -242,6 +282,17 @@ ZOR.UI = function ZORUI() {
         }
 
         if (typeof newstate !== 'undefined' && valid_state( newstate ) ) {
+            // The mod/settings menu (PLAYING_CONFIG) pauses the server while
+            // open on a private server so an admin can adjust parameters
+            // without bots/captures moving under them - single choke point
+            // here so it fires no matter how the transition happened
+            // (hotkey, gear button, Done button, etc).
+            let leavingConfig  = uidata.state === STATES.PLAYING_CONFIG;
+            let enteringConfig = newstate === STATES.PLAYING_CONFIG;
+            if (uidata.is_admin && enteringConfig !== leavingConfig && adminSetPaused) {
+                adminSetPaused( enteringConfig );
+            }
+
             console.log('entering state ' + newstate);
             uidata.state = newstate;
 
@@ -592,6 +643,16 @@ ZOR.UI = function ZORUI() {
             uiStartGame(ZOR.PlayerTypes.PLAYER);
         });
 
+        on( ACTIONS.SPECTATE_LOGIN, function ZORSpectateHandler() {
+            ga('send', {
+                hitType      : 'event',
+                eventCategory: 'button',
+                eventAction  : 'spectate_button',
+                eventLabel   : 'mouse_click',
+            });
+            uiStartGame(ZOR.PlayerTypes.SPECTATOR);
+        });
+
         config.HIDE_OWN_TRAIL = JSON.parse(localStorage.hide_own_trail || 'false') ? true : false;
 
         config.STEERING = config.STEERING_METHODS['MOUSE_' + uidata.steering.toUpperCase()];
@@ -638,6 +699,81 @@ ZOR.UI = function ZORUI() {
                 config.HIDE_OWN_TRAIL = false;
             }
         }
+
+        on( ACTIONS.ADMIN_TOGGLE_BOTS, function ZORAdminToggleBots(context, e) {
+            let enabled = e.target.checked;
+            engine.set('admin_bots_enabled', enabled);
+            if (adminSetBotsEnabled) adminSetBotsEnabled(enabled);
+        });
+
+        on( ACTIONS.ADMIN_TOGGLE_RL_BOTS, function ZORAdminToggleRlBots(context, e) {
+            let enabled = e.target.checked;
+            engine.set('admin_rl_enabled', enabled);
+            if (adminSetRlEnabled) adminSetRlEnabled(enabled);
+        });
+
+        on( ACTIONS.ADMIN_SET_MAX_BOTS, function ZORAdminSetMaxBots(context, e) {
+            let value = parseInt(e.target.value, 10);
+            if (isNaN(value)) return;
+            engine.set('admin_max_bots', value);
+            if (adminSetMaxBots) adminSetMaxBots(value);
+        });
+
+        on( ACTIONS.ADMIN_SET_RL_THRESHOLD, function ZORAdminSetRlThreshold(context, e) {
+            let value = parseInt(e.target.value, 10);
+            if (isNaN(value)) return;
+            engine.set('admin_rl_threshold', value);
+            if (adminSetRlThreshold) adminSetRlThreshold(value);
+        });
+
+        on( ACTIONS.ADMIN_SET_BOT_MAX_SPAWN_SCALE, function ZORAdminSetBotMaxSpawnScale(context, e) {
+            let value = parseInt(e.target.value, 10);
+            if (isNaN(value)) return;
+            engine.set('admin_bot_max_spawn_scale', value);
+            if (adminSetBotMaxSpawnScale) adminSetBotMaxSpawnScale(value);
+        });
+
+        on( ACTIONS.ADMIN_TOGGLE_BOTS_CAN_EAT_BOTS, function ZORAdminToggleBotsCanEatBots(context, e) {
+            let enabled = e.target.checked;
+            engine.set('admin_bots_can_eat_bots', enabled);
+            if (adminSetBotsCanEatBots) adminSetBotsCanEatBots(enabled);
+        });
+
+        on( ACTIONS.ADMIN_REFRESH_DEBUG_STATS, function ZORAdminRefreshDebugStats() {
+            if (adminRequestDebugStats) adminRequestDebugStats();
+        });
+
+        on( ACTIONS.ADMIN_RESET_BOTS, function ZORAdminResetBots() {
+            if (adminResetBots) adminResetBots();
+        });
+
+        on( ACTIONS.ADMIN_EDIT_WORLD_SIZE, function ZORAdminEditWorldSize(context, e) {
+            let value = parseInt(e.target.value, 10);
+            if (!isNaN(value)) engine.set('admin_world_size_draft', value);
+        });
+
+        on( ACTIONS.ADMIN_EDIT_FOOD_DENSITY, function ZORAdminEditFoodDensity(context, e) {
+            let value = parseInt(e.target.value, 10);
+            if (!isNaN(value)) engine.set('admin_food_density_draft', value);
+        });
+
+        on( ACTIONS.ADMIN_APPLY_WORLD_SETTINGS, function ZORAdminApplyWorldSettings() {
+            if (!adminApplyWorldSettings) return;
+
+            // clamp to the same bounds the server enforces (see
+            // handle_msg_admin_apply_world_settings in AppServer.js) so the
+            // confirm dialog shows what will *actually* happen, not just
+            // whatever was typed - the server clamps silently otherwise
+            let worldSize   = Math.max( 500, Math.min( 3000, engine.get('admin_world_size_draft') ) );
+            let foodDensity = Math.max( 5, Math.min( 45, engine.get('admin_food_density_draft') ) );
+
+            let ok = confirm( 'This restarts the server and reconnects everyone (including you). '
+                + 'Applying world size ' + worldSize + ', food density ' + foodDensity
+                + ' (values are capped at 3000 / 45). Continue?' );
+            if (ok) {
+                adminApplyWorldSettings( worldSize, foodDensity );
+            }
+        });
 
         on( ACTIONS.PAGE_RELOAD, location.reload.bind(location) );
 

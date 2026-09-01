@@ -49,10 +49,16 @@ ZOR.PlayerView = class PlayerView {
             this.skin.material.depthWrite = true;
         }
 
+        // Spectators fly a free camera, not an avatar - no visible sphere to
+        // be "inside of". The sphere object still exists and still moves
+        // (the camera rig targets its position), it's just never rendered.
+        this.isInvisibleSpectator = current && model.type === ZOR.PlayerTypes.SPECTATOR;
+
         this.spherePool = ZOR.Pools[this.skin.poolname];
         this.mainSphere = this.spherePool.borrow();
         this.mainSphere.position.copy(model.sphere.position);
         this.mainSphere.material = this.skin.material;
+        this.mainSphere.visible = !this.isInvisibleSpectator;
 
         if (!current) {
             this.setAlpha(true);
@@ -66,6 +72,7 @@ ZOR.PlayerView = class PlayerView {
 
         this.playerName = ZOR.Pools.playerNames.borrow();
         this.playerName.onReady(() => {
+            if (this.isInvisibleSpectator) return;
             scene.add(this.playerName.textMesh);
             this.playerName.setName(this.model.name);
             this.playerName.setColor(this.playerColor);
@@ -86,7 +93,9 @@ ZOR.PlayerView = class PlayerView {
 
         // give the meshes time to render before drawing trails
         // also adds a nice fade in effect for trails
-        setTimeout(() => this.initTrails(), 250);
+        if (!this.isInvisibleSpectator) {
+            setTimeout(() => this.initTrails(), 250);
+        }
     }
 
     /**

@@ -547,6 +547,10 @@ ZOR.Player.prototype.getSpeed = function ZORPlayerGetScore() {
         playerSpeed = 4;
     }
 
+    if (this.type === ZOR.PlayerTypes.SPECTATOR) {
+        playerSpeed = config.SPECTATOR_SPEED;
+    }
+
     if (this.abilities.speed_boost.isActive()) {
         playerSpeed = playerSpeed * config.ABILITY_SPEED_BOOST_MULTIPLIER;
     }

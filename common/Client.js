@@ -113,6 +113,15 @@ ZOR.ZORClient.prototype.z_setupSocket = function ZORSetupSocket(ws) {
                 case 'speed_boost_stop':
                     handle_msg_speed_boost_stop();
                     break;
+                case 'admin_status':
+                    handle_msg_admin_status(message);
+                    break;
+                case 'admin_debug_stats':
+                    handle_msg_admin_debug_stats(message);
+                    break;
+                case 'player_type_changed':
+                    handle_msg_player_type_changed(message);
+                    break;
             }
         }
         else {
@@ -225,6 +234,34 @@ ZOR.ZORClient.prototype.z_setupSocket = function ZORSetupSocket(ws) {
         UTIL.toVector3(newPlayer.sphere, 'velocity');
 
         self.z_handler.z_handle_player_join(newPlayer);
+    }
+
+    /**
+     * Handle the admin status message from the server (sent on welcome for admins, and
+     * after any admin_set_* command is processed).
+     * @param {Object} msg
+     */
+    function handle_msg_admin_status(msg) {
+        self.z_handler.z_handle_admin_status(msg);
+    }
+
+    /**
+     * Handle the admin debug stats snapshot from the server (sent in response
+     * to z_sendAdminDebugStatsRequest).
+     * @param {Object} msg
+     */
+    function handle_msg_admin_debug_stats(msg) {
+        self.z_handler.z_handle_admin_debug_stats(msg);
+    }
+
+    /**
+     * Handle a player switching between PLAYER and SPECTATOR mid-session
+     * (see z_sendSwitchPlayerType) - could be this client or any other
+     * connected player.
+     * @param {Object} msg
+     */
+    function handle_msg_player_type_changed(msg) {
+        self.z_handler.z_handle_player_type_changed(msg);
     }
 
     /**
@@ -361,6 +398,17 @@ ZOR.ZORClient.prototype.z_sendRespawn = function ZORSendRespawn() {
     this.z_ws.send(JSON.stringify({ op: 'respawn' }));
 };
 
+/**
+ * Intentionally leave the game. Closes the socket with the app-reserved
+ * CLOSE_NO_RESTART code so the client's own onclose handler doesn't treat
+ * this like an unexpected network drop (see z_setupSocket's ws.onclose).
+ */
+ZOR.ZORClient.prototype.z_sendLeaveGame = function ZORSendLeaveGame() {
+    if (this.z_ws && this.z_ws.readyState === WebSocket.OPEN) {
+        this.z_ws.close(config.CLOSE_NO_RESTART, 'player left');
+    }
+};
+
 ZOR.ZORClient.prototype.z_sendPing = function sendPing() {
     this.z_zorPingStart = Date.now();
 
@@ -445,6 +493,108 @@ ZOR.ZORClient.prototype.z_sendLeaderboardsRequest = function ZORSendLeaderboards
 
 ZOR.ZORClient.prototype.z_clearIntervalMethods = function ZORClearIntervalMethods() {
     clearInterval(this.z_interval_id_heartbeat);
+};
+
+/**
+ * Admin-only: toggle bot spawning on/off. Ignored server-side for non-admins.
+ * @param {boolean} enabled
+ */
+ZOR.ZORClient.prototype.z_sendAdminSetBotsEnabled = function ZORSendAdminSetBotsEnabled(enabled) {
+    this.z_ws.send(JSON.stringify({ op: 'admin_set_bots_enabled', value: !!enabled }));
+};
+
+/**
+ * Admin-only: toggle whether large bots use the trained RL movement pattern.
+ * Ignored server-side for non-admins.
+ * @param {boolean} enabled
+ */
+ZOR.ZORClient.prototype.z_sendAdminSetRlEnabled = function ZORSendAdminSetRlEnabled(enabled) {
+    this.z_ws.send(JSON.stringify({ op: 'admin_set_rl_enabled', value: !!enabled }));
+};
+
+/**
+ * Admin-only: pause/unpause bot movement and all captures/drains server-wide.
+ * Ignored server-side for non-admins.
+ * @param {boolean} enabled
+ */
+ZOR.ZORClient.prototype.z_sendAdminSetPaused = function ZORSendAdminSetPaused(enabled) {
+    this.z_ws.send(JSON.stringify({ op: 'admin_set_paused', value: !!enabled }));
+};
+
+/**
+ * Admin-only: set the desired bot population. Ignored server-side for non-admins.
+ * @param {number} value
+ */
+ZOR.ZORClient.prototype.z_sendAdminSetMaxBots = function ZORSendAdminSetMaxBots(value) {
+    this.z_ws.send(JSON.stringify({ op: 'admin_set_max_bots', value: value }));
+};
+
+/**
+ * Admin-only: set the size threshold above which bots use 'hunt'/'rl' instead
+ * of a random curve. Ignored server-side for non-admins.
+ * @param {number} value
+ */
+ZOR.ZORClient.prototype.z_sendAdminSetRlThreshold = function ZORSendAdminSetRlThreshold(value) {
+    this.z_ws.send(JSON.stringify({ op: 'admin_set_rl_threshold', value: value }));
+};
+
+/**
+ * Admin-only: request a fresh snapshot of every player/bot's food and player
+ * capture counts. Ignored server-side for non-admins.
+ */
+ZOR.ZORClient.prototype.z_sendAdminDebugStatsRequest = function ZORSendAdminDebugStatsRequest() {
+    this.z_ws.send(JSON.stringify({ op: 'admin_debug_stats_request' }));
+};
+
+/**
+ * Admin-only: clear and respawn every bot at the current world settings.
+ * No restart needed. Ignored server-side for non-admins.
+ */
+ZOR.ZORClient.prototype.z_sendAdminResetBots = function ZORSendAdminResetBots() {
+    this.z_ws.send(JSON.stringify({ op: 'admin_reset_bots' }));
+};
+
+/**
+ * Admin-only: toggle whether bots can capture each other, not just humans.
+ * Ignored server-side for non-admins.
+ * @param {boolean} enabled
+ */
+ZOR.ZORClient.prototype.z_sendAdminSetBotsCanEatBots = function ZORSendAdminSetBotsCanEatBots(enabled) {
+    this.z_ws.send(JSON.stringify({ op: 'admin_set_bots_can_eat_bots', value: !!enabled }));
+};
+
+/**
+ * Switches this connection between PLAYER and SPECTATOR without a
+ * disconnect/rejoin. Available to anyone.
+ * @param {string} newType ZOR.PlayerTypes.PLAYER or ZOR.PlayerTypes.SPECTATOR
+ */
+ZOR.ZORClient.prototype.z_sendSwitchPlayerType = function ZORSendSwitchPlayerType(newType) {
+    this.z_ws.send(JSON.stringify({ op: 'switch_player_type', value: newType }));
+};
+
+/**
+ * Admin-only: cap the size of newly-spawned bots. Ignored server-side for non-admins.
+ * @param {number} value
+ */
+ZOR.ZORClient.prototype.z_sendAdminSetBotMaxSpawnScale = function ZORSendAdminSetBotMaxSpawnScale(value) {
+    this.z_ws.send(JSON.stringify({ op: 'admin_set_bot_max_spawn_scale', value: value }));
+};
+
+/**
+ * Admin-only: apply a new world size / food density. This rewrites
+ * common/config.js on disk and restarts the server process (via
+ * supervisor's file watch) to apply it - every connected client, including
+ * this one, will see its socket close and auto-reload a moment later.
+ * Ignored server-side for non-admins.
+ * @param {number} worldSize
+ * @param {number} foodDensity
+ */
+ZOR.ZORClient.prototype.z_sendAdminApplyWorldSettings = function ZORSendAdminApplyWorldSettings(worldSize, foodDensity) {
+    this.z_ws.send(JSON.stringify({
+        op          : 'admin_apply_world_settings',
+        world_size  : worldSize,
+        food_density: foodDensity,
+    }));
 };
 
 if (NODEJS_CLIENT) module.exports = ZOR.ZORClient;

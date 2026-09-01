@@ -22,6 +22,28 @@ let uuid            = require('node-uuid');
 // Patch console.x methods in order to add timestamp information
 require('console-stamp')(console, { pattern: 'mm/dd/yyyy HH:MM:ss.l' });
 
+// Also tee console output to a log file so server activity (bot spawns, admin
+// commands, player joins, etc.) can be reviewed after the fact, not just
+// watched live in whatever terminal happens to be running the process.
+(function setupFileLogging() {
+    let os      = require('os');
+    let path    = require('path');
+    let logDir  = path.join(os.homedir(), 'zorbio', 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    let logStream = fs.createWriteStream(path.join(logDir, 'server.log'), { flags: 'a' });
+
+    ['log', 'error', 'warn'].forEach(function(level) {
+        let original = console[level].bind(console);
+        console[level] = function(...args) {
+            original(...args);
+            let line = args.map(function(a) {
+                return typeof a === 'string' ? a : JSON.stringify(a);
+            }).join(' ');
+            logStream.write('[' + new Date().toISOString() + '] ' + line + '\n');
+        };
+    });
+})();
+
 /**
  *  Define the sample server.
  */
@@ -144,7 +166,18 @@ let MainServer = function() {
         self.wss = new WebSocketServer(wss_options);
 
         // Set up express static content root
-        self.app.use(express.static(__dirname + '/../' + (process.argv[2] || 'client')));
+        let staticOptions = {};
+        if (process.env.ZOR_ENV === 'dev') {
+            // force revalidation on every request in dev - without this, a
+            // browser can keep serving a stale cached client/js/*.js across
+            // reloads (even a real navigation reload doesn't guarantee a
+            // re-fetch), which looks exactly like "my new feature isn't
+            // running" when it's actually just not loaded yet
+            staticOptions.setHeaders = function(res) {
+                res.setHeader('Cache-Control', 'no-cache');
+            };
+        }
+        self.app.use(express.static(__dirname + '/../' + (process.argv[2] || 'client'), staticOptions));
 
         // The app server contains all the logic and state of the WebSocket app
         self.appProxy = new AppProxy(self.wss, self.app, self.server_label, self.ws_port);

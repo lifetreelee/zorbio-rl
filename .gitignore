@@ -11,3 +11,11 @@ client/css/.sass-cache
 client/templates/*.json
 
 build_files/*.spec
+
+# RL training artifacts - large/binary, kept local only
+server/rl/*.pt
+server/rl/checkpoints/
+server/rl/*.jsonl
+server/rl/*.log
+server/rl/__pycache__/
+server/rl/eval_session.json
